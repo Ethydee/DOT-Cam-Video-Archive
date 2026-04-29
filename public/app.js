@@ -12,6 +12,14 @@ let sliderRefreshInterval = null;
 let recordingDuration = 0;
 let isScrubbing = false; // true while user is dragging the slider
 
+// Multi-View State
+let mvCameras = [];
+let mvHlsInstances = {}; // { camId: { hls: null, dvrHls: null, video: el } }
+let mvDvrMode = false;
+let mvDvrLoadedCount = 0;
+let mvRecordingDuration = 0;
+let mvIsScrubbing = false;
+let mvSliderRefreshInterval = null;
 // ── Init ──────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
     updateAuthUI();
@@ -58,8 +66,9 @@ function showView(id) {
     document.getElementById(id).classList.add('active');
 }
 
-function showGrid() { destroyPlayer(); currentCamera = null; showView('view-grid'); loadCameras(); }
-function showPlayer(camId) { showView('view-player'); openCamera(camId); }
+function showGrid() { destroyPlayer(); destroyMultiView(); currentCamera = null; showView('view-grid'); loadCameras(); }
+function showPlayer(camId) { destroyMultiView(); showView('view-player'); openCamera(camId); }
+function showMultiView() { destroyPlayer(); destroyMultiView(); currentCamera = null; showView('view-multiview'); loadMvState(); renderMultiViewGrid(); }
 function showAdmin() { showView('view-admin'); loadAdminCameras(); loadAdminUsers(); loadSettings(); }
 function showLogin() { document.getElementById('modal-login').classList.remove('hidden'); }
 function closeModals() { document.querySelectorAll('.modal').forEach(m => m.classList.add('hidden')); }
@@ -108,6 +117,7 @@ function renderCameraGrid() {
                     <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
                     <circle cx="12" cy="13" r="4"/>
                 </svg>
+                <img class="preview-thumb" src="/api/segments/${cam.id}/thumb.jpg?t=${Date.now()}" onerror="this.style.display='none'" alt="" />
                 ${cam.recording ? '<span class="card-live-badge">● LIVE</span>' : ''}
             </div>
             <div class="card-info">
@@ -649,4 +659,453 @@ function escapeHtml(str) {
     const div = document.createElement('div');
     div.textContent = str;
     return div.innerHTML;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MULTI-VIEW
+// ═══════════════════════════════════════════════════════════════════════════
+
+function showMvSelector() {
+    const list = document.getElementById('mv-camera-list');
+    list.innerHTML = cameras.map(cam => {
+        const added = mvCameras.some(c => c.id === cam.id);
+        return `<div class="admin-item">
+            <div class="admin-item-info">
+                <h4>${escapeHtml(cam.name)}</h4>
+            </div>
+            <div class="admin-item-actions">
+                ${added 
+                    ? `<button class="btn-ghost" disabled>Added</button>` 
+                    : `<button class="btn-primary" onclick="addMvCamera(${cam.id})">Add</button>`}
+            </div>
+        </div>`;
+    }).join('');
+    document.getElementById('modal-mv-selector').classList.remove('hidden');
+}
+
+function saveMvState() {
+    const ids = mvCameras.map(c => c.id);
+    localStorage.setItem('mvCameras', JSON.stringify(ids));
+}
+
+function loadMvState() {
+    const saved = localStorage.getItem('mvCameras');
+    if (saved) {
+        try {
+            const ids = JSON.parse(saved);
+            mvCameras = ids.map(id => cameras.find(c => c.id === id)).filter(c => c);
+        } catch(e) {}
+    }
+}
+
+function addMvCamera(camId) {
+    const cam = cameras.find(c => c.id === camId);
+    if (!cam || mvCameras.some(c => c.id === camId)) return;
+    
+    mvCameras.push(cam);
+    saveMvState();
+    closeModals();
+    renderMultiViewGrid();
+}
+
+function removeMvCamera(camId) {
+    // Destroy HLS instances for this camera
+    const instance = mvHlsInstances[camId];
+    if (instance) {
+        if (instance.liveHls) instance.liveHls.destroy();
+        if (instance.dvrHls) instance.dvrHls.destroy();
+        delete mvHlsInstances[camId];
+    }
+    
+    mvCameras = mvCameras.filter(c => c.id !== camId);
+    saveMvState();
+    
+    const container = document.getElementById(`mv-container-${camId}`);
+    if (container) container.remove();
+    
+    if (mvCameras.length === 0) {
+        renderMultiViewGrid(); // Shows empty state
+    } else {
+        refreshMvSliderRange();
+    }
+}
+
+function renderMultiViewGrid() {
+    const grid = document.getElementById('multiview-grid');
+    const controls = document.getElementById('mv-controls');
+    
+    if (mvCameras.length === 0) {
+        grid.innerHTML = `<div class="empty-state" id="mv-empty-state">
+            <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" opacity="0.3">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                <line x1="12" y1="3" x2="12" y2="21"/>
+                <line x1="3" y1="12" x2="21" y2="12"/>
+            </svg>
+            <p>No cameras added</p>
+            <p class="sub">Click "+ Add Camera" to start multi-view</p>
+        </div>`;
+        controls.style.display = 'none';
+        return;
+    }
+    
+    const emptyState = document.getElementById('mv-empty-state');
+    if (emptyState) emptyState.remove();
+    controls.style.display = 'block';
+    
+    mvCameras.forEach(cam => {
+        if (!document.getElementById(`mv-container-${cam.id}`)) {
+            const div = document.createElement('div');
+            div.className = 'multiview-player-container';
+            div.id = `mv-container-${cam.id}`;
+            div.innerHTML = `
+                <div class="multiview-title">${escapeHtml(cam.name)}</div>
+                <button class="multiview-remove" onclick="removeMvCamera(${cam.id})">X</button>
+                <video id="mv-video-${cam.id}" playsinline muted></video>
+                <div id="mv-overlay-${cam.id}" class="player-overlay">
+                    <div class="spinner"></div>
+                </div>
+            `;
+            grid.appendChild(div);
+            initMvCamera(cam.id);
+        }
+    });
+    
+    if (!mvSliderRefreshInterval) {
+        refreshMvSliderRange();
+        mvSliderRefreshInterval = setInterval(() => {
+            if (!mvDvrMode) refreshMvSliderRange();
+        }, 10000);
+    }
+}
+
+function initMvCamera(camId) {
+    if (!mvHlsInstances[camId]) {
+        mvHlsInstances[camId] = { liveHls: null, dvrHls: null, loaded: false };
+    }
+    const video = document.getElementById(`mv-video-${camId}`);
+    video.addEventListener('timeupdate', onMvVideoTimeUpdate);
+    
+    if (mvDvrMode) {
+        startMvDvrPlayback(camId, video);
+    } else {
+        startMvLivePlayback(camId, video);
+    }
+}
+
+function startMvLivePlayback(camId, video) {
+    const inst = mvHlsInstances[camId];
+    if (inst.dvrHls) { inst.dvrHls.destroy(); inst.dvrHls = null; }
+    if (inst.liveHls) { inst.liveHls.destroy(); inst.liveHls = null; }
+    
+    const url = `/api/cameras/${camId}/live.m3u8`;
+    if (Hls.isSupported()) {
+        const h = new Hls({ liveSyncDurationCount: 3, enableWorker: true });
+        inst.liveHls = h;
+        h.loadSource(url);
+        h.attachMedia(video);
+        h.on(Hls.Events.MANIFEST_PARSED, () => {
+            video.play().catch(() => {});
+            document.getElementById(`mv-overlay-${camId}`).classList.add('hidden');
+        });
+        h.on(Hls.Events.ERROR, (_, data) => {
+            if (data.fatal && data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+                setTimeout(() => h && h.startLoad(), 3000);
+            }
+        });
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = url;
+        video.addEventListener('loadedmetadata', () => {
+            video.play().catch(() => {});
+            document.getElementById(`mv-overlay-${camId}`).classList.add('hidden');
+        }, {once: true});
+    }
+}
+
+async function startMvDvrPlayback(camId, video) {
+    const inst = mvHlsInstances[camId];
+    if (inst.liveHls) { inst.liveHls.destroy(); inst.liveHls = null; }
+    if (inst.dvrHls) { inst.dvrHls.destroy(); inst.dvrHls = null; }
+    inst.loaded = false;
+    
+    document.getElementById(`mv-overlay-${camId}`).classList.remove('hidden');
+    
+    const url = `/api/cameras/${camId}/full.m3u8`;
+    if (Hls.isSupported()) {
+        const h = new Hls({
+            maxBufferLength: 60,
+            maxMaxBufferLength: 120,
+            enableWorker: true
+        });
+        inst.dvrHls = h;
+        h.loadSource(url);
+        h.attachMedia(video);
+        
+        h.on(Hls.Events.MANIFEST_PARSED, () => {
+            const checkDuration = () => {
+                if (video.duration && isFinite(video.duration)) {
+                    inst.loaded = true;
+                    mvDvrLoadedCount++;
+                    const slider = document.getElementById('mv-dvr-slider');
+                    const secondsAgo = parseFloat(slider.max) - parseFloat(slider.value);
+                    video.currentTime = Math.max(0, video.duration - secondsAgo);
+                    video.play().catch(() => {});
+                    document.getElementById(`mv-overlay-${camId}`).classList.add('hidden');
+                } else {
+                    setTimeout(checkDuration, 50);
+                }
+            };
+            checkDuration();
+        });
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = url;
+        video.addEventListener('loadedmetadata', () => {
+            const checkDuration = () => {
+                if (video.duration && isFinite(video.duration)) {
+                    inst.loaded = true;
+                    mvDvrLoadedCount++;
+                    const slider = document.getElementById('mv-dvr-slider');
+                    const secondsAgo = parseFloat(slider.max) - parseFloat(slider.value);
+                    video.currentTime = Math.max(0, video.duration - secondsAgo);
+                    video.play().catch(() => {});
+                    document.getElementById(`mv-overlay-${camId}`).classList.add('hidden');
+                } else {
+                    setTimeout(checkDuration, 50);
+                }
+            };
+            checkDuration();
+        }, { once: true });
+    }
+}
+
+async function refreshMvSliderRange() {
+    let maxDur = 60;
+    for (const cam of mvCameras) {
+        try {
+            const range = await API.getSegmentRange(cam.id);
+            if (range.duration_seconds > 0) {
+                const maxRewind = cam.rewind_hours * 3600;
+                const dur = Math.min(range.duration_seconds, maxRewind);
+                if (dur > maxDur) maxDur = dur;
+            }
+        } catch {}
+    }
+    mvRecordingDuration = maxDur;
+    
+    if (!mvDvrMode) {
+        const slider = document.getElementById('mv-dvr-slider');
+        slider.max = mvRecordingDuration;
+        slider.value = mvRecordingDuration;
+        updateMvTimelineLabels();
+    }
+}
+
+function onMvVideoTimeUpdate(e) {
+    if (!mvDvrMode || mvIsScrubbing) return;
+    const firstCam = mvCameras[0];
+    if (!firstCam || e.target.id !== `mv-video-${firstCam.id}`) return;
+    
+    const video = e.target;
+    if (!video.duration || !isFinite(video.duration)) return;
+    
+    const slider = document.getElementById('mv-dvr-slider');
+    const secondsAgo = video.duration - video.currentTime;
+    slider.value = parseFloat(slider.max) - secondsAgo;
+    updateMvTimelineLabels();
+}
+
+let mvScrubThrottle = null;
+
+function onMvDvrSliderInput() {
+    if (!mvIsScrubbing) {
+        // First input event (start of drag): pause all videos
+        mvIsScrubbing = true;
+        if (mvDvrMode) {
+            mvCameras.forEach(cam => {
+                const video = document.getElementById(`mv-video-${cam.id}`);
+                if (video) video.pause();
+            });
+        }
+    }
+    
+    updateMvTimelineLabels();
+    
+    // Throttle visual seeking to 4 times a second to prevent HLS request flooding
+    if (mvDvrMode && !mvScrubThrottle) {
+        mvScrubThrottle = setTimeout(() => {
+            mvScrubThrottle = null;
+            if (!mvIsScrubbing) return; // User released slider already
+            
+            const slider = document.getElementById('mv-dvr-slider');
+            const secondsAgo = parseFloat(slider.max) - parseFloat(slider.value);
+            mvCameras.forEach(cam => {
+                const inst = mvHlsInstances[cam.id];
+                if (inst && inst.loaded) {
+                    const video = document.getElementById(`mv-video-${cam.id}`);
+                    if (video && video.duration) {
+                        video.currentTime = Math.max(0, video.duration - secondsAgo);
+                    }
+                }
+            });
+        }, 250);
+    }
+}
+
+function onMvDvrSliderChange() {
+    mvIsScrubbing = false;
+    const slider = document.getElementById('mv-dvr-slider');
+    const secondsAgo = parseFloat(slider.max) - parseFloat(slider.value);
+    
+    if (secondsAgo < 10) {
+        mvJumpToLive();
+        return;
+    }
+    
+    if (!mvDvrMode) {
+        enterMvDvrMode(secondsAgo);
+    } else {
+        performMvSync(secondsAgo);
+    }
+}
+
+let mvSyncReadyCount = 0;
+
+function performMvSync(secondsAgo) {
+    mvSyncReadyCount = 0;
+    
+    const camerasToSync = mvCameras.filter(cam => {
+        const inst = mvHlsInstances[cam.id];
+        return inst && inst.loaded;
+    });
+    
+    if (camerasToSync.length === 0) return;
+    
+    camerasToSync.forEach(cam => {
+        const video = document.getElementById(`mv-video-${cam.id}`);
+        if (!video || !video.duration) return;
+        
+        document.getElementById(`mv-overlay-${cam.id}`).classList.remove('hidden');
+        video.pause();
+        
+        const checkReady = () => {
+            mvSyncReadyCount++;
+            if (mvSyncReadyCount >= camerasToSync.length) {
+                camerasToSync.forEach(c => {
+                    const v = document.getElementById(`mv-video-${c.id}`);
+                    document.getElementById(`mv-overlay-${c.id}`).classList.add('hidden');
+                    if (v) v.play().catch(()=>{});
+                });
+            }
+        };
+        
+        const targetTime = Math.max(0, video.duration - secondsAgo);
+        
+        if (Math.abs(video.currentTime - targetTime) < 0.5 && video.readyState >= 3) {
+            checkReady();
+            return;
+        }
+        
+        const handler = () => {
+            if (video.readyState >= 3) {
+                video.removeEventListener('seeked', handler);
+                checkReady();
+            } else {
+                const canplayHandler = () => {
+                    video.removeEventListener('canplay', canplayHandler);
+                    video.removeEventListener('seeked', handler);
+                    checkReady();
+                };
+                video.addEventListener('canplay', canplayHandler, { once: true });
+            }
+        };
+        
+        video.addEventListener('seeked', handler);
+        video.currentTime = targetTime;
+    });
+}
+function enterMvDvrMode(initialSecondsAgo) {
+    if (mvDvrMode) return;
+    
+    mvDvrMode = true;
+    mvDvrLoadedCount = 0;
+    
+    document.getElementById('mv-badge-live').classList.add('hidden');
+    document.getElementById('mv-badge-dvr').classList.remove('hidden');
+    
+    const slider = document.getElementById('mv-dvr-slider');
+    slider.value = parseFloat(slider.max) - initialSecondsAgo;
+    updateMvTimelineLabels();
+    
+    mvCameras.forEach(cam => {
+        const video = document.getElementById(`mv-video-${cam.id}`);
+        startMvDvrPlayback(cam.id, video);
+    });
+}
+
+function mvJumpToLive() {
+    mvDvrMode = false;
+    document.getElementById('mv-badge-live').classList.remove('hidden');
+    document.getElementById('mv-badge-dvr').classList.add('hidden');
+    
+    const slider = document.getElementById('mv-dvr-slider');
+    slider.max = mvRecordingDuration;
+    slider.value = mvRecordingDuration;
+    updateMvTimelineLabels();
+    
+    mvCameras.forEach(cam => {
+        const video = document.getElementById(`mv-video-${cam.id}`);
+        document.getElementById(`mv-overlay-${cam.id}`).classList.remove('hidden');
+        startMvLivePlayback(cam.id, video);
+    });
+}
+
+function mvRewindBy(seconds) {
+    const slider = document.getElementById('mv-dvr-slider');
+    const currentVal = parseFloat(slider.value);
+    slider.value = Math.max(0, currentVal - seconds);
+    onMvDvrSliderChange();
+}
+
+function updateMvTimelineLabels() {
+    const slider = document.getElementById('mv-dvr-slider');
+    const maxVal = parseFloat(slider.max) || 1;
+    const val = parseFloat(slider.value) || 0;
+    
+    if (mvDvrMode) {
+        document.getElementById('mv-timeline-start').textContent = '0:00';
+        document.getElementById('mv-timeline-current').textContent = formatDuration(val);
+        document.getElementById('mv-timeline-end').textContent = formatDuration(maxVal);
+    } else {
+        const secondsAgo = maxVal - val;
+        document.getElementById('mv-timeline-start').textContent = `-${formatDuration(maxVal)}`;
+        document.getElementById('mv-timeline-current').textContent = secondsAgo > 10 ? `-${formatDuration(secondsAgo)}` : 'LIVE';
+        document.getElementById('mv-timeline-end').textContent = 'LIVE';
+    }
+}
+
+function destroyMultiView() {
+    Object.keys(mvHlsInstances).forEach(camId => {
+        const inst = mvHlsInstances[camId];
+        if (inst.liveHls) inst.liveHls.destroy();
+        if (inst.dvrHls) inst.dvrHls.destroy();
+        
+        const video = document.getElementById(`mv-video-${camId}`);
+        if (video) {
+            video.pause();
+            video.removeAttribute('src');
+            video.load();
+        }
+    });
+    
+    mvHlsInstances = {};
+    mvCameras = [];
+    mvDvrMode = false;
+    mvRecordingDuration = 0;
+    mvIsScrubbing = false;
+    if (mvSliderRefreshInterval) {
+        clearInterval(mvSliderRefreshInterval);
+        mvSliderRefreshInterval = null;
+    }
+    
+    const grid = document.getElementById('multiview-grid');
+    if (grid) grid.innerHTML = '';
 }

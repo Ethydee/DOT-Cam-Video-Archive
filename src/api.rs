@@ -287,11 +287,17 @@ async fn serve_segment(
         return (StatusCode::NOT_FOUND, "Segment not found").into_response();
     }
 
+    let content_type = if filename.ends_with(".jpg") {
+        "image/jpeg"
+    } else {
+        "video/mp2t"
+    };
+
     match tokio::fs::read(&path).await {
         Ok(data) => (
             StatusCode::OK,
-            [(header::CONTENT_TYPE, "video/mp2t"),
-             (header::CACHE_CONTROL, "public, max-age=86400")],
+            [(header::CONTENT_TYPE, content_type),
+             (header::CACHE_CONTROL, "public, max-age=10")],
             Body::from(data),
         ).into_response(),
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read segment").into_response(),

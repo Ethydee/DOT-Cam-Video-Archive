@@ -128,7 +128,9 @@ main { padding-top: 72px; padding-bottom: 2rem; }
     width: 100%; aspect-ratio: 16/9; background: var(--bg-surface);
     display: flex; align-items: center; justify-content: center; position: relative; overflow: hidden;
 }
-.camera-card .card-preview .preview-icon { opacity: 0.15; }
+.camera-card .card-preview .preview-icon { opacity: 0.15; position: absolute; }
+.camera-card .card-preview .preview-thumb { width: 100%; height: 100%; object-fit: cover; z-index: 1; opacity: 0.8; transition: opacity 0.3s; }
+.camera-card:hover .card-preview .preview-thumb { opacity: 1; }
 .camera-card .card-preview video { width: 100%; height: 100%; object-fit: cover; }
 .card-live-badge {
     position: absolute; top: 0.6rem; right: 0.6rem;
@@ -260,4 +262,47 @@ main { padding-top: 72px; padding-bottom: 2rem; }
     #topbar { padding: 0 1rem; }
     .view { padding: 0 1rem; }
     .modal-content { padding: 1.25rem; width: 95%; }
+}
+
+/* ── Multi-View ────────────────────────────────────────────────────────── */
+.multiview-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+.multiview-player-container {
+    position: relative;
+    background: #000;
+    border-radius: var(--radius);
+    overflow: hidden;
+    aspect-ratio: 16/9;
+}
+.multiview-player-container video {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+}
+.multiview-overlay {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.5); transition: opacity 0.3s;
+}
+.multiview-overlay.hidden { opacity: 0; pointer-events: none; }
+.multiview-title {
+    position: absolute; top: 0.5rem; left: 0.5rem;
+    background: rgba(0,0,0,0.6); color: white; padding: 0.2rem 0.5rem; border-radius: 4px;
+    font-size: 0.8rem; z-index: 10; font-weight: 600;
+}
+.multiview-remove {
+    position: absolute; top: 0.5rem; right: 0.5rem;
+    background: rgba(239, 68, 68, 0.8); color: white; border: none; padding: 0.2rem 0.6rem; border-radius: 4px;
+    font-size: 0.8rem; cursor: pointer; z-index: 10; font-weight: bold; transition: var(--transition);
+}
+.multiview-remove:hover {
+    background: var(--error); transform: scale(1.05);
+}
+@media (max-width: 768px) {
+    .multiview-grid {
+        grid-template-columns: 1fr;
+    }
 }

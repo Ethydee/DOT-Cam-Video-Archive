@@ -123,6 +123,8 @@ async fn run_ffmpeg_recorder(
     let mut child = Command::new("ffmpeg")
         .args([
             "-i", input_url,
+            // Output 1: HLS Stream
+            "-map", "0",
             "-c", "copy",
             "-f", "hls",
             "-hls_time", "4",
@@ -134,6 +136,12 @@ async fn run_ffmpeg_recorder(
             "-hls_flags", "temp_file",
             "-hls_segment_filename", &segment_pattern,
             &playlist_path,
+            
+            // Output 2: Thumbnail Image (1 frame every 10 seconds)
+            "-map", "0:v",
+            "-vf", "fps=1/10,scale=320:-1",
+            "-update", "1",
+            &format!("{}/thumb.jpg", out_dir),
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
