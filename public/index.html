@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Traffic Command Center</title>
+    <meta name="description" content="Live traffic camera monitoring with DVR rewind and archival playback">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
+</head>
+<body>
+    <!-- ── Top Bar ─────────────────────────────────────────────────────── -->
+    <header id="topbar">
+        <div class="topbar-left">
+            <div class="logo">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+                    <circle cx="12" cy="13" r="4"/>
+                </svg>
+                <span>Traffic DVR</span>
+            </div>
+        </div>
+        <div class="topbar-right">
+            <div id="user-info" class="hidden">
+                <span id="display-username"></span>
+                <button id="btn-admin" class="btn-ghost hidden" onclick="showAdmin()">Admin</button>
+                <button id="btn-logout" class="btn-ghost" onclick="logout()">Logout</button>
+            </div>
+            <button id="btn-login" class="btn-primary" onclick="showLogin()">Login</button>
+        </div>
+    </header>
+
+    <!-- ── Main Content ────────────────────────────────────────────────── -->
+    <main id="main-content">
+        <!-- Camera Grid View (default) -->
+        <section id="view-grid" class="view active">
+            <div class="view-header">
+                <h1>Live Cameras</h1>
+                <div class="view-actions">
+                    <input type="text" id="search-cameras" class="input-search" placeholder="Search cameras..." oninput="filterCameras()">
+                </div>
+            </div>
+            <div id="camera-grid" class="camera-grid">
+                <div class="empty-state">
+                    <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" opacity="0.3">
+                        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+                        <circle cx="12" cy="13" r="4"/>
+                    </svg>
+                    <p>No cameras configured</p>
+                    <p class="sub">Login as admin to add cameras</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Player View -->
+        <section id="view-player" class="view">
+            <div class="player-layout">
+                <div class="player-container">
+                    <button class="btn-back" onclick="showGrid()">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+                        Back
+                    </button>
+                    <div class="video-wrapper" id="video-wrapper">
+                        <video id="video-player" playsinline></video>
+                        <div id="player-overlay" class="player-overlay">
+                            <div class="spinner"></div>
+                        </div>
+                    </div>
+                    <div class="player-controls">
+                        <div class="controls-top">
+                            <h2 id="player-camera-name"></h2>
+                            <div class="player-badges">
+                                <span id="badge-live" class="badge badge-live hidden">● LIVE</span>
+                                <span id="badge-dvr" class="badge badge-dvr hidden">DVR</span>
+                            </div>
+                        </div>
+                        <div class="dvr-timeline" id="dvr-timeline">
+                            <input type="range" id="dvr-slider" min="0" max="100" value="100" step="any" class="dvr-slider" oninput="onDvrSliderInput()" onchange="onDvrSliderChange()">
+                            <div class="timeline-labels">
+                                <span id="timeline-start"></span>
+                                <span id="timeline-current"></span>
+                                <span id="timeline-end">LIVE</span>
+                            </div>
+                        </div>
+                        <div class="controls-bottom">
+                            <button class="btn-control" id="btn-jump-live" onclick="jumpToLive()">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+                                Jump to Live
+                            </button>
+                            <div class="control-group">
+                                <button class="btn-control" onclick="rewindBy(300)">-5m</button>
+                                <button class="btn-control" onclick="rewindBy(1800)">-30m</button>
+                                <button class="btn-control" onclick="rewindBy(3600)">-1h</button>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Archive Section -->
+                    <div class="archive-section">
+                        <h3>Archive Playback</h3>
+                        <div class="archive-controls">
+                            <label>Select Date</label>
+                            <input type="date" id="archive-date" class="input-date" onchange="loadArchive()">
+                            <div id="archive-times" class="archive-times"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Admin View -->
+        <section id="view-admin" class="view">
+            <div class="admin-layout">
+                <button class="btn-back" onclick="showGrid()">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+                    Back to Cameras
+                </button>
+                <div class="admin-tabs">
+                    <button class="tab active" onclick="switchAdminTab('cameras', this)">Cameras</button>
+                    <button class="tab" onclick="switchAdminTab('users', this)">Users</button>
+                    <button class="tab" onclick="switchAdminTab('settings', this)">Settings</button>
+                </div>
+
+                <!-- Admin: Cameras Tab -->
+                <div id="admin-cameras" class="admin-tab-content active">
+                    <div class="admin-header">
+                        <h2>Manage Cameras</h2>
+                        <button class="btn-primary" onclick="showCameraModal()">+ Add Camera</button>
+                    </div>
+                    <div id="admin-camera-list" class="admin-list"></div>
+                </div>
+
+                <!-- Admin: Users Tab -->
+                <div id="admin-users" class="admin-tab-content">
+                    <div class="admin-header">
+                        <h2>Manage Users</h2>
+                        <button class="btn-primary" onclick="showUserModal()">+ Add User</button>
+                    </div>
+                    <div id="admin-user-list" class="admin-list"></div>
+                </div>
+
+                <!-- Admin: Settings Tab -->
+                <div id="admin-settings" class="admin-tab-content">
+                    <div class="admin-header">
+                        <h2>System Settings</h2>
+                    </div>
+                    <div class="settings-form" id="settings-form">
+                        <div class="form-group">
+                            <label>Default Rewind Limit (hours)</label>
+                            <input type="number" id="setting-rewind" class="input" min="1" max="168" value="24">
+                        </div>
+                        <div class="form-group">
+                            <label>RTMP Port</label>
+                            <input type="number" id="setting-rtmp-port" class="input" min="1024" max="65535" value="1935">
+                        </div>
+                        <button class="btn-primary" onclick="saveSettings()">Save Settings</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- ── Login Modal ─────────────────────────────────────────────────── -->
+    <div id="modal-login" class="modal hidden">
+        <div class="modal-backdrop" onclick="closeModals()"></div>
+        <div class="modal-content">
+            <h2>Login</h2>
+            <form id="login-form" onsubmit="handleLogin(event)">
+                <div class="form-group">
+                    <label>Username</label>
+                    <input type="text" id="login-username" class="input" required autocomplete="username">
+                </div>
+                <div class="form-group">
+                    <label>Password</label>
+                    <input type="password" id="login-password" class="input" required autocomplete="current-password">
+                </div>
+                <p id="login-error" class="error-text hidden"></p>
+                <button type="submit" class="btn-primary btn-full">Login</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- ── Camera Modal ────────────────────────────────────────────────── -->
+    <div id="modal-camera" class="modal hidden">
+        <div class="modal-backdrop" onclick="closeModals()"></div>
+        <div class="modal-content">
+            <h2 id="camera-modal-title">Add Camera</h2>
+            <form id="camera-form" onsubmit="handleCameraSubmit(event)">
+                <input type="hidden" id="camera-edit-id">
+                <div class="form-group">
+                    <label>Camera Name</label>
+                    <input type="text" id="camera-name" class="input" required placeholder="e.g. Highway 101 North">
+                </div>
+                <div class="form-group">
+                    <label>Location (optional)</label>
+                    <input type="text" id="camera-location" class="input" placeholder="e.g. Mile marker 42">
+                </div>
+                <div class="form-group">
+                    <label>Source Type</label>
+                    <select id="camera-source-type" class="input" onchange="toggleSourceFields()">
+                        <option value="hls">HLS Stream (.m3u8)</option>
+                        <option value="stream_key">Stream Key (OBS)</option>
+                    </select>
+                </div>
+                <div class="form-group" id="field-stream-url">
+                    <label>Stream URL</label>
+                    <input type="url" id="camera-stream-url" class="input" placeholder="https://example.com/stream.m3u8">
+                </div>
+                <div class="form-group hidden" id="field-stream-key-info">
+                    <div class="info-card">
+                        <p>A unique stream key will be generated automatically.</p>
+                        <p>Use it in OBS with the RTMP URL shown after saving.</p>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Rewind Limit (hours)</label>
+                    <input type="number" id="camera-rewind" class="input" min="1" max="168" value="24">
+                </div>
+                <p id="camera-error" class="error-text hidden"></p>
+                <div class="modal-actions">
+                    <button type="button" class="btn-ghost" onclick="closeModals()">Cancel</button>
+                    <button type="submit" class="btn-primary">Save</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ── User Modal ──────────────────────────────────────────────────── -->
+    <div id="modal-user" class="modal hidden">
+        <div class="modal-backdrop" onclick="closeModals()"></div>
+        <div class="modal-content">
+            <h2 id="user-modal-title">Add User</h2>
+            <form id="user-form" onsubmit="handleUserSubmit(event)">
+                <input type="hidden" id="user-edit-id">
+                <div class="form-group">
+                    <label>Username</label>
+                    <input type="text" id="user-username" class="input" required>
+                </div>
+                <div class="form-group">
+                    <label>Password</label>
+                    <input type="password" id="user-password" class="input">
+                    <small id="user-password-hint" class="hidden">Leave blank to keep current password</small>
+                </div>
+                <div class="form-group">
+                    <label>Role</label>
+                    <select id="user-role" class="input">
+                        <option value="user">User</option>
+                        <option value="admin">Admin</option>
+                    </select>
+                </div>
+                <p id="user-error" class="error-text hidden"></p>
+                <div class="modal-actions">
+                    <button type="button" class="btn-ghost" onclick="closeModals()">Cancel</button>
+                    <button type="submit" class="btn-primary">Save</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ── Stream Key Info Modal ───────────────────────────────────────── -->
+    <div id="modal-stream-key" class="modal hidden">
+        <div class="modal-backdrop" onclick="closeModals()"></div>
+        <div class="modal-content">
+            <h2>Stream Key Generated</h2>
+            <div class="stream-key-display">
+                <div class="form-group">
+                    <label>RTMP Server URL</label>
+                    <div class="copy-field">
+                        <input type="text" id="rtmp-server-url" class="input" readonly>
+                        <button class="btn-copy" onclick="copyField('rtmp-server-url')">Copy</button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Stream Key</label>
+                    <div class="copy-field">
+                        <input type="text" id="rtmp-stream-key" class="input" readonly>
+                        <button class="btn-copy" onclick="copyField('rtmp-stream-key')">Copy</button>
+                    </div>
+                </div>
+                <div class="info-card">
+                    <p><strong>OBS Setup:</strong></p>
+                    <p>1. Go to Settings → Stream</p>
+                    <p>2. Set Service to "Custom"</p>
+                    <p>3. Paste the Server URL and Stream Key above</p>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button class="btn-primary" onclick="closeModals()">Done</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── Toast ───────────────────────────────────────────────────────── -->
+    <div id="toast-container"></div>
+
+    <script src="/api.js"></script>
+    <script src="/app.js"></script>
+</body>
+</html>

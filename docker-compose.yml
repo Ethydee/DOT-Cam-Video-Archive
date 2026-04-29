@@ -1,0 +1,10 @@
+services:
+  traffic-dvr:
+    build: .
+    container_name: traffic-dvr
+    ports:
+      - "5000:5000"
+      - "1935:1935"
+    volumes:
+      - ./DATA:/app/DATA
+    restart: unless-stopped
